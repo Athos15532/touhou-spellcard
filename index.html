@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>东方符卡速查</title>
+<style>
+  :root {
+    --bg: #0f1220;
+    --card: #1a1f36;
+    --border: #2c3355;
+    --text: #e8ebf7;
+    --muted: #8b93b8;
+    --accent: #ff5d8f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 40px 16px;
+  }
+  .app { width: 100%; max-width: 640px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 20px; }
+  #search {
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 16px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #hint {
+    margin: 14px 0 0;
+    font-size: 14px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  #hint:empty { display: none; }
+  .hint-chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+  .hint-chip {
+    background: rgba(255,93,143,.15);
+    color: var(--accent);
+    border: 1px solid rgba(255,93,143,.4);
+    border-radius: 12px;
+    padding: 3px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .hint-chip:hover { background: rgba(255,93,143,.3); }
+  #results { margin-top: 16px; display: grid; gap: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 17px; }
+  .spell-list {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; gap: 8px;
+  }
+  .spell-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255,255,255,.05);
+    font-size: 14px;
+  }
+  .spell-list li:last-child { border-bottom: none; padding-bottom: 0; }
+  .spell-jp { color: var(--muted); font-size: 12px; display: block; margin-top: 2px; }
+  .works { color: var(--muted); white-space: nowrap; font-size: 13px; }
+  .empty { color: var(--muted); font-size: 14px; }
+  mark { background: transparent; color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>东方符卡速查</h1>
+  <input id="search" type="search" placeholder="角色名 / 拼音首字母 / 符卡关键词 / 作品名…" autocomplete="off">
+  <p id="hint"></p>
+  <div id="results"></div>
+</div>
+
+<script src="data.js"></script>
+<script>
+const searchInput = document.getElementById("search");
+const hintEl      = document.getElementById("hint");
+const resultsEl   = document.getElementById("results");
+
+/*工具 */
+const norm = (s) =>
+  (s || "").trim().toLowerCase().replace(/[\s·・「」\[\]【】]/g, "");
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/*全部作品列表（去重）*/
+const ALL_WORKS = [...new Set(
+  characters.flatMap((c) => c.spells.flatMap((s) => s.works))
+)];
+
+/*单条符卡的可搜索文本*/
+function spellHaystack(character, spell) {
+  return [
+    norm(character.name),
+    character.py || "",
+    norm(spell.name),
+    norm(spell.jp),
+  ].join(" ");
+}
+
+/*搜索*/
+function search(raw) {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+  const nTokens = tokens.map(norm);
+
+  // 1. 单关键词：角色名/拼音首字母
+  if (nTokens.length === 1) {
+    const q = nTokens[0];
+    const charHits = characters.filter((c) =>
+      norm(c.name).includes(q) || (c.py || "").includes(q)
+    );
+    if (charHits.length) return { mode: "char", hits: charHits };
+  }
+
+  // 2. 单关键词：作品名（模糊匹配）
+  if (nTokens.length === 1) {
+    const q = nTokens[0];
+    const workHits = ALL_WORKS.filter((w) => norm(w).includes(q));
+    if (workHits.length) {
+      const groups = [];
+      for (const c of characters) {
+        const hit = c.spells.filter((s) =>
+          s.works.some((w) => workHits.includes(w))
+        );
+        if (hit.length) groups.push({ character: c, spells: hit });
+      }
+      return { mode: "spell", keyword: "", groups };
+    }
+  }
+
+  // 3. 符卡模式：多关键词全部命中（AND）
+  const groups = [];
+  for (const c of characters) {
+    const hit = c.spells.filter((s) => {
+      const hay = spellHaystack(c, s);
+      return nTokens.every((t) => hay.includes(t));
+    });
+    if (hit.length) groups.push({ character: c, spells: hit });
+  }
+  groups.sort((a, b) => b.spells.length - a.spells.length);
+  if (groups.length) return { mode: "spell", keyword: raw.trim(), groups };
+
+  return { mode: "none" };
+}
+
+/*渲染*/
+function renderCharCard(character, spells, highlight) {
+  const list = spells ?? character.spells;
+
+  let re = null;
+  if (highlight && highlight.trim()) {
+    const parts = highlight.trim().split(/\s+/).map(escapeRegExp).filter(Boolean);
+    if (parts.length) re = new RegExp(`(${parts.join("|")})`, "gi");
+  }
+  const mark = (text) => {
+    const safe = escapeHtml(text);
+    return re ? safe.replace(re, "<mark>$1</mark>") : safe;
+  };
+
+  const items = list
+    .map((s) => `
+      <li>
+        <span>
+          ${mark(s.name)}
+          ${s.jp ? `<span class="spell-jp">${mark(s.jp)}</span>` : ""}
+        </span>
+        <span class="works">${escapeHtml(s.works.join("、"))}</span>
+      </li>`)
+    .join("");
+
+  return `
+    <section class="card">
+      <h2>${escapeHtml(character.name)}</h2>
+      <ul class="spell-list">${items}</ul>
+    </section>`;
+}
+
+function render(result) {
+  if (!result) {
+    hintEl.innerHTML = "";
+    resultsEl.innerHTML = "";
+    return;
+  }
+
+  // 角色模式
+  if (result.mode === "char") {
+    hintEl.innerHTML = "";
+    resultsEl.innerHTML = result.hits
+      .map((c) => renderCharCard(c, null, null))
+      .join("");
+    return;
+  }
+
+  // 符卡 / 作品模式
+  if (result.mode === "spell") {
+    // 顶部的「猜你想搜」：只有符卡关键词模式才显示，作品模式不显示
+    if (result.keyword) {
+      const chips = result.groups
+        .map(
+          (g) =>
+            `<button class="hint-chip" data-char="${escapeHtml(g.character.name)}">${escapeHtml(g.character.name)}符卡</button>`
+        )
+        .join("");
+      hintEl.innerHTML = `猜你想搜：<span class="hint-chips">${chips}</span>`;
+    } else {
+      hintEl.innerHTML = "";
+    }
+    resultsEl.innerHTML = result.groups
+      .map((g) => renderCharCard(g.character, g.spells, result.keyword))
+      .join("");
+    return;
+  }
+
+  hintEl.innerHTML = "";
+  resultsEl.innerHTML = '<p class="empty">没有找到相关角色或符卡</p>';
+}
+
+/* 点击「猜你想搜」的标签 → 跳到该角色*/
+hintEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".hint-chip");
+  if (!btn) return;
+  const name = btn.dataset.char;
+  searchInput.value = name;
+  render(search(name));
+  searchInput.focus();
+});
+
+/* 绑定输入 */
+searchInput.addEventListener("input", () => {
+  render(search(searchInput.value));
+});
+</script>
+</body>
+</html>
